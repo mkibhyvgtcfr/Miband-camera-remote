@@ -1,0 +1,493 @@
+<template>
+  <div class="page">
+    <div class="top">
+      <text class="brand">MIBAND</text>
+      <div class="link">
+        <div class="dot {{connected ? 'dot-on' : ''}}"></div>
+        <text class="link-text">{{linkText}}</text>
+      </div>
+    </div>
+
+    <div class="hero">
+      <text class="hero-kicker">{{connected ? 'PHONE LINK ONLINE' : 'WAITING FOR PHONE'}}</text>
+      <text class="hero-title">{{model}}</text>
+      <text class="hero-sub">{{brand}} · {{endpoint}}</text>
+      <div class="stats">
+        <div class="stat">
+          <text class="stat-k">相机</text>
+          <text class="stat-v">{{cameraReady ? '已连接' : '未连接'}}</text>
+        </div>
+        <div class="stat">
+          <text class="stat-k">电量</text>
+          <text class="stat-v">{{battery >= 0 ? battery + '%' : '—'}}</text>
+        </div>
+        <div class="stat">
+          <text class="stat-k">拍摄</text>
+          <text class="stat-v">{{count}}</text>
+        </div>
+      </div>
+    </div>
+
+    <div class="expo">
+      <div class="expo-cell">
+        <text class="expo-k">ISO</text>
+        <text class="expo-v">{{iso}}</text>
+      </div>
+      <div class="expo-line"></div>
+      <div class="expo-cell">
+        <text class="expo-k">快门</text>
+        <text class="expo-v">{{shutter}}</text>
+      </div>
+      <div class="expo-line"></div>
+      <div class="expo-cell">
+        <text class="expo-k">光圈</text>
+        <text class="expo-v">{{aperture}}</text>
+      </div>
+    </div>
+
+    <div class="cta" @click="primaryAction">
+      <text class="cta-text">{{connected ? '开始拍摄' : '连接手机'}}</text>
+      <text class="cta-arrow">›</text>
+    </div>
+    <div class="ghost" @click="secondaryAction">
+      <text class="ghost-text">{{connected ? '调整曝光参数' : '重新连接手环通道'}}</text>
+    </div>
+
+    <div class="tip">
+      <div class="tip-dot"></div>
+      <text class="tip-text">{{tip}}</text>
+    </div>
+    <div class="spacer"></div>
+
+    <div class="tabs">
+      <div class="tab tab-active"><text class="tab-text tab-text-active">状态</text></div>
+      <div class="tab" @click="goShutter"><text class="tab-text">快门</text></div>
+      <div class="tab" @click="goParams"><text class="tab-text">参数</text></div>
+    </div>
+  </div>
+</template>
+
+<script>
+import router from '@system.router'
+
+export default {
+  data: {
+    connected: false,
+    cameraReady: false,
+    linkText: '正在连接手机',
+    model: '等待相机',
+    brand: 'MIBAND CAMERA REMOTE',
+    endpoint: '打开手机端「米环相机」',
+    battery: -1,
+    count: 0,
+    iso: '—',
+    shutter: '—',
+    aperture: '—',
+    tip: '在手机端连接相机，手环会同步曝光。'
+  },
+  onInit() {
+    this.linkText = '点按连接手机'
+  },
+  onShow() {
+    if (this.conn) this.send({ v: 1, cmd: 'status' })
+    this.startPolling()
+  },
+  onHide() {
+    this.stopPolling()
+  },
+  onDestroy() {
+    this.stopPolling()
+  },
+  scheduleBind() {
+    if (this.bindScheduled) return
+    this.bindScheduled = true
+    const self = this
+    setTimeout(function () {
+      self.bindScheduled = false
+      try {
+        self.bindChannel()
+      } catch (e) {
+        self.showLinkError(e)
+      }
+    }, 60)
+  },
+  primaryAction() {
+    if (this.connected) {
+      this.goShutter()
+    } else {
+      this.connectPhone()
+    }
+  },
+  secondaryAction() {
+    if (this.connected) {
+      this.goParams()
+    } else {
+      this.connectPhone()
+    }
+  },
+  connectPhone() {
+    if (this.connected) return
+    this.linkText = '正在连接手机…'
+    if (!this.interconnect) {
+      try {
+        this.interconnect = require('@system.interconnect')
+      } catch (e) {
+        this.showLinkError(e)
+        return
+      }
+    }
+    this.scheduleBind()
+    this.send({ v: 1, cmd: 'status' })
+  },
+  showLinkError(e) {
+    this.connected = false
+    this.cameraReady = false
+    this.linkText = '通信接口不可用'
+    this.tip = '请更新手环系统，并确认手机端已安装「米环相机」。'
+    console.error('bind channel failed', e)
+  },
+  bindChannel() {
+    if (!this.interconnect) {
+      try {
+        this.interconnect = require('@system.interconnect')
+      } catch (e) {
+        this.showLinkError(e)
+        return
+      }
+    }
+    if (!this.interconnect) {
+      this.showLinkError('interconnect module unavailable')
+      return
+    }
+    if (!this.conn) {
+      this.conn = this.interconnect.instance()
+    }
+    if (this.bound || !this.conn) return
+    this.bound = true
+    const self = this
+    this.conn.onopen = function () {
+      self.connected = true
+      self.linkText = '手机通道在线'
+      self.send({ v: 1, cmd: 'status' })
+    }
+    this.conn.onclose = function () {
+      self.connected = false
+      self.cameraReady = false
+      self.linkText = '手机通道断开'
+      self.tip = '请保持小米运动健康与手机端应用在后台运行。'
+    }
+    this.conn.onerror = function (data) {
+      self.connected = false
+      self.linkText = '通道异常'
+      self.tip = '连接失败：' + (data && data.data ? data.data : '请安装手机端应用')
+    }
+    this.conn.onmessage = function (res) {
+      self.handleMessage(res)
+    }
+    this.conn.getReadyState({
+      success: function (res) {
+        if (res.status === 1) {
+          self.connected = true
+          self.linkText = '手机通道在线'
+        }
+      },
+      fail: function () {
+        self.linkText = '手机端未连接'
+      }
+    })
+  },
+  handleMessage(res) {
+    try {
+      let raw = res && res.data !== undefined ? res.data : res
+      if (typeof raw === 'string') raw = JSON.parse(raw)
+      if (raw && raw.data && typeof raw.data === 'string') raw = JSON.parse(raw.data)
+      if (raw && raw.data && typeof raw.data === 'object') raw = raw.data
+      if (!raw || raw.type !== 'state') return
+      this.connected = true
+      this.linkText = raw.band ? '手机通道在线' : '手机已连接'
+      this.cameraReady = !!raw.connected
+      this.model = raw.model || '等待相机'
+      this.brand = (raw.brand || '相机') + ' · 手机服务端'
+      this.endpoint = this.cameraReady ? 'USB / Wi-Fi 通道' : '请在手机端连接相机'
+      this.battery = typeof raw.battery === 'number' ? raw.battery : -1
+      this.count = raw.count || 0
+      this.iso = raw.iso || '—'
+      this.shutter = raw.shutter || '—'
+      this.aperture = raw.aperture || '—'
+      if (this.cameraReady) {
+        this.tip = raw.busy ? '相机正在处理上一张照片…' : '轻触下方按钮进入快门。'
+      } else {
+        this.tip = '手机已连，请在手机端选择相机。'
+      }
+      if (this.lastBusy && !raw.busy) {
+        this.vibrate()
+      }
+      this.lastBusy = !!raw.busy
+    } catch (e) {
+      console.log('message parse error', e)
+    }
+  },
+  send(payload) {
+    const self = this
+    if (!this.conn || typeof this.conn.send !== 'function') return
+    try {
+      this.conn.send({
+      data: payload,
+      success: function () {},
+        fail: function (data, code) {
+          self.connected = false
+          self.linkText = '发送失败 ' + code
+        }
+      })
+    } catch (e) {
+      self.connected = false
+      self.linkText = '发送异常'
+      console.error('send failed', e)
+    }
+  },
+  startPolling() {
+    this.stopPolling()
+    const self = this
+    this.timer = setInterval(function () {
+      self.send({ v: 1, cmd: 'status' })
+    }, 2000)
+  },
+  stopPolling() {
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+  },
+  goShutter() {
+    router.replace({ uri: '/pages/shutter' })
+  },
+  goParams() {
+    router.replace({ uri: '/pages/params' })
+  },
+  vibrate() {
+    try {
+      if (!this.vibrator) this.vibrator = require('@system.vibrator')
+      this.vibrator.vibrate({ mode: 'short' })
+    } catch (e) {}
+  }
+}
+</script>
+
+<style>
+.page {
+  width: 212px;
+  height: 520px;
+  background-color: #000000;
+  flex-direction: column;
+  align-items: center;
+}
+.top {
+  width: 184px;
+  height: 30px;
+  margin-top: 30px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand {
+  color: #ff6900;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  width: 64px;
+}
+.link {
+  flex-direction: row;
+  align-items: center;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #5c5c5c;
+  margin-right: 5px;
+}
+.dot-on {
+  background-color: #30b98c;
+}
+.link-text {
+  color: #9b968f;
+  font-size: 14px;
+}
+.hero {
+  width: 184px;
+  height: 156px;
+  margin-top: 10px;
+  border-radius: 22px;
+  background-color: #141210;
+  border: 1px solid #2b211a;
+  padding: 15px 16px;
+  flex-direction: column;
+}
+.hero-kicker {
+  color: #ff9a52;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+.hero-title {
+  color: #f7f2ea;
+  font-size: 22px;
+  font-weight: bold;
+  margin-top: 5px;
+  width: 152px;
+  height: 30px;
+}
+.hero-sub {
+  color: #8d877f;
+  font-size: 14px;
+  margin-top: 1px;
+  width: 152px;
+  height: 32px;
+}
+.stats {
+  flex-direction: row;
+  margin-top: 8px;
+}
+.stat {
+  flex: 1;
+  flex-direction: column;
+}
+.stat-k {
+  color: #77726b;
+  font-size: 11px;
+}
+.stat-v {
+  color: #f7f2ea;
+  font-size: 15px;
+  font-weight: bold;
+  margin-top: 1px;
+}
+.expo {
+  width: 184px;
+  height: 58px;
+  margin-top: 8px;
+  border-radius: 18px;
+  background-color: #101112;
+  flex-direction: row;
+  align-items: center;
+}
+.expo-cell {
+  flex: 1;
+  height: 50px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.expo-k {
+  color: #77726b;
+  font-size: 11px;
+}
+.expo-v {
+  color: #f7f2ea;
+  font-size: 17px;
+  font-weight: bold;
+  margin-top: 1px;
+}
+.expo-line {
+  width: 1px;
+  height: 28px;
+  background-color: #26282b;
+}
+.cta {
+  width: 184px;
+  height: 50px;
+  margin-top: 8px;
+  border-radius: 18px;
+  background-color: #ff6900;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+.cta-text {
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: bold;
+}
+.cta-arrow {
+  color: #ffffff;
+  font-size: 28px;
+  margin-left: 6px;
+}
+.ghost {
+  width: 184px;
+  height: 36px;
+  margin-top: 6px;
+  border-radius: 15px;
+  background-color: #141416;
+  align-items: center;
+  justify-content: center;
+}
+.ghost-text {
+  color: #b8b2aa;
+  font-size: 15px;
+}
+.tip {
+  width: 184px;
+  height: 44px;
+  margin-top: 7px;
+  flex-direction: row;
+  align-items: center;
+}
+.tip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 3px;
+  background-color: #ff6900;
+  margin-right: 7px;
+}
+.tip-text {
+  color: #847f78;
+  font-size: 14px;
+  width: 170px;
+}
+.spacer {
+  flex: 1;
+}
+.tabs {
+  width: 184px;
+  height: 42px;
+  border-radius: 16px;
+  background-color: #101112;
+  flex-direction: row;
+  align-items: center;
+  padding: 3px;
+  margin-bottom: 8px;
+}
+.tab {
+  flex: 1;
+  height: 36px;
+  border-radius: 13px;
+  align-items: center;
+  justify-content: center;
+}
+.tab-active {
+  background-color: #2a1a0d;
+}
+.tab-text {
+  color: #858078;
+  font-size: 18px;
+}
+.tab-text-active {
+  color: #ff8b35;
+  font-weight: bold;
+}
+</style>
+
+
+
+
+
+
+
+
+
+
+
+
+
+

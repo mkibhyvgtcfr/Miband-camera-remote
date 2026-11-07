@@ -1,0 +1,387 @@
+﻿<template>
+  <div class="page">
+    <div class="top">
+      <text class="brand">PARAMETERS</text>
+      <div class="link">
+        <div class="dot {{connected ? 'dot-on' : ''}}"></div>
+        <text class="link-text">{{connected ? '手机在线' : '未连接'}}</text>
+      </div>
+    </div>
+
+    <div class="head">
+      <text class="title">参数</text>
+      <text class="sub">{{cameraReady ? model : '等待相机'}}</text>
+    </div>
+
+    <text class="hint">{{cameraReady ? '＋ / − 实时同步相机' : '请先在手机端连接相机'}}</text>
+
+    <div class="row">
+      <div class="row-left">
+        <text class="row-k">ISO</text>
+        <text class="row-v">{{iso}}</text>
+      </div>
+      <div class="step" @click="adjust('iso', -1)"><text class="step-t">−</text></div>
+      <div class="step step-plus" @click="adjust('iso', 1)"><text class="step-t">+</text></div>
+    </div>
+
+    <div class="row">
+      <div class="row-left">
+        <text class="row-k">快门</text>
+        <text class="row-v">{{shutter}}</text>
+      </div>
+      <div class="step" @click="adjust('shutter', -1)"><text class="step-t">−</text></div>
+      <div class="step step-plus" @click="adjust('shutter', 1)"><text class="step-t">+</text></div>
+    </div>
+
+    <div class="row">
+      <div class="row-left">
+        <text class="row-k">光圈</text>
+        <text class="row-v">{{aperture}}</text>
+      </div>
+      <div class="step" @click="adjust('aperture', -1)"><text class="step-t">−</text></div>
+      <div class="step step-plus" @click="adjust('aperture', 1)"><text class="step-t">+</text></div>
+    </div>
+
+    <div class="row">
+      <div class="row-left">
+        <text class="row-k">曝光补偿</text>
+        <text class="row-v">{{ev}}</text>
+      </div>
+      <div class="step" @click="adjust('ev', -1)"><text class="step-t">−</text></div>
+      <div class="step step-plus" @click="adjust('ev', 1)"><text class="step-t">+</text></div>
+    </div>
+
+    <text class="status">{{statusText}}</text>
+    <div class="spacer"></div>
+
+    <div class="tabs">
+      <div class="tab" @click="goHome"><text class="tab-text">状态</text></div>
+      <div class="tab" @click="goShutter"><text class="tab-text">快门</text></div>
+      <div class="tab tab-active"><text class="tab-text tab-text-active">参数</text></div>
+    </div>
+  </div>
+</template>
+
+<script>
+import router from '@system.router'
+
+export default {
+  data: {
+    connected: false,
+    cameraReady: false,
+    model: '等待相机',
+    iso: '—',
+    shutter: '—',
+    aperture: '—',
+    ev: '—',
+    statusText: '正在同步相机参数'
+  },
+  onInit() {
+    this.scheduleBind()
+  },
+  onShow() {
+    this.scheduleBind()
+    if (this.conn) this.send({ v: 1, cmd: 'status' })
+    this.startPolling()
+  },
+  onHide() {
+    this.stopPolling()
+  },
+  onDestroy() {
+    this.stopPolling()
+  },
+  scheduleBind() {
+    if (this.bindScheduled) return
+    this.bindScheduled = true
+    const self = this
+    setTimeout(function () {
+      self.bindScheduled = false
+      try {
+        self.bindChannel()
+      } catch (e) {
+        self.showLinkError(e)
+      }
+    }, 300)
+  },
+  showLinkError(e) {
+    this.connected = false
+    this.cameraReady = false
+    this.statusText = '通信接口不可用，请更新手环系统'
+    console.error('bind channel failed', e)
+  },
+  bindChannel() {
+    if (!this.interconnect) {
+      try {
+        this.interconnect = require('@system.interconnect')
+      } catch (e) {
+        this.showLinkError(e)
+        return
+      }
+    }
+    if (!this.interconnect) {
+      this.showLinkError('interconnect module unavailable')
+      return
+    }
+    if (!this.conn) this.conn = this.interconnect.instance()
+    if (this.bound || !this.conn) return
+    this.bound = true
+    const self = this
+    this.conn.onopen = function () {
+      self.connected = true
+      self.statusText = '手机通道在线'
+      self.send({ v: 1, cmd: 'status' })
+    }
+    this.conn.onclose = function () {
+      self.connected = false
+      self.cameraReady = false
+      self.statusText = '手机通道断开'
+    }
+    this.conn.onerror = function () {
+      self.connected = false
+      self.statusText = '请安装并打开手机端应用'
+    }
+    this.conn.onmessage = function (res) {
+      self.handleMessage(res)
+    }
+    this.conn.getReadyState({
+      success: function (res) {
+        if (res.status === 1) self.connected = true
+      }
+    })
+  },
+  handleMessage(res) {
+    try {
+      let raw = res && res.data !== undefined ? res.data : res
+      if (typeof raw === 'string') raw = JSON.parse(raw)
+      if (raw && raw.data && typeof raw.data === 'string') raw = JSON.parse(raw.data)
+      if (raw && raw.data && typeof raw.data === 'object') raw = raw.data
+      if (!raw) return
+      if (raw.type === 'ack') {
+        if (!raw.ok && raw.message) this.statusText = raw.message
+        return
+      }
+      if (raw.type !== 'state') return
+      this.connected = true
+      this.cameraReady = !!raw.connected
+      this.model = raw.model || '等待相机'
+      this.iso = raw.iso || '—'
+      this.shutter = raw.shutter || '—'
+      this.aperture = raw.aperture || '—'
+      this.ev = raw.ev || '—'
+      this.statusText = raw.connected ? '参数已与相机同步' : '请在手机端连接相机'
+    } catch (e) {
+      console.log('state parse error', e)
+    }
+  },
+  adjust(key, dir) {
+    if (!this.cameraReady) {
+      this.statusText = '请先在手机端连接相机'
+      return
+    }
+    this.vibrate()
+    this.statusText = '正在同步相机…'
+    this.send({ v: 1, cmd: 'adjust', key: key, dir: dir })
+  },
+  send(payload) {
+    const self = this
+    if (!this.conn || typeof this.conn.send !== 'function') return
+    try {
+      this.conn.send({
+        data: payload,
+        success: function () {},
+        fail: function (data, code) {
+          self.connected = false
+          self.statusText = '发送失败 ' + code
+        }
+      })
+    } catch (e) {
+      self.connected = false
+      self.statusText = '发送异常'
+      console.error('send failed', e)
+    }
+  },
+  startPolling() {
+    this.stopPolling()
+    const self = this
+    this.timer = setInterval(function () {
+      self.send({ v: 1, cmd: 'status' })
+    }, 2000)
+  },
+  stopPolling() {
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+  },
+  goHome() {
+    router.replace({ uri: '/pages/index' })
+  },
+  goShutter() {
+    router.replace({ uri: '/pages/shutter' })
+  },
+  vibrate() {
+    try {
+      if (!this.vibrator) this.vibrator = require('@system.vibrator')
+      this.vibrator.vibrate({ mode: 'short' })
+    } catch (e) {}
+  }
+}
+</script>
+
+<style>
+.page {
+  width: 212px;
+  height: 520px;
+  background-color: #000000;
+  flex-direction: column;
+  align-items: center;
+}
+.top {
+  width: 184px;
+  height: 26px;
+  margin-top: 24px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand {
+  color: #ff6900;
+  font-size: 15px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.link {
+  flex-direction: row;
+  align-items: center;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #5c5c5c;
+  margin-right: 5px;
+}
+.dot-on {
+  background-color: #30b98c;
+}
+.link-text {
+  color: #8d877f;
+  font-size: 15px;
+}
+.head {
+  width: 184px;
+  height: 48px;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+.title {
+  color: #f7f2ea;
+  font-size: 30px;
+  font-weight: bold;
+}
+.sub {
+  color: #77726b;
+  font-size: 15px;
+  width: 108px;
+  text-align: right;
+  margin-bottom: 4px;
+}
+.hint {
+  width: 184px;
+  height: 24px;
+  color: #77726b;
+  font-size: 15px;
+  margin-top: 4px;
+}
+.row {
+  width: 184px;
+  height: 64px;
+  margin-top: 7px;
+  border-radius: 18px;
+  background-color: #111213;
+  border: 1px solid #23252a;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 14px;
+  padding-right: 8px;
+}
+.row-left {
+  flex: 1;
+  flex-direction: column;
+}
+.row-k {
+  color: #817c75;
+  font-size: 15px;
+}
+.row-v {
+  color: #f7f2ea;
+  font-size: 26px;
+  font-weight: bold;
+  margin-top: 1px;
+}
+.step {
+  width: 42px;
+  height: 44px;
+  border-radius: 13px;
+  background-color: #1c1e21;
+  align-items: center;
+  justify-content: center;
+}
+.step-plus {
+  background-color: #2a1a0d;
+  margin-left: 5px;
+}
+.step-t {
+  color: #e8e2da;
+  font-size: 26px;
+  font-weight: bold;
+}
+.status {
+  width: 184px;
+  height: 20px;
+  color: #77726b;
+  font-size: 15px;
+  text-align: center;
+  margin-top: 5px;
+}
+.spacer {
+  flex: 1;
+}
+.tabs {
+  width: 184px;
+  height: 42px;
+  border-radius: 16px;
+  background-color: #101112;
+  flex-direction: row;
+  align-items: center;
+  padding: 3px;
+  margin-bottom: 8px;
+}
+.tab {
+  flex: 1;
+  height: 36px;
+  border-radius: 13px;
+  align-items: center;
+  justify-content: center;
+}
+.tab-active {
+  background-color: #2a1a0d;
+}
+.tab-text {
+  color: #858078;
+  font-size: 18px;
+}
+.tab-text-active {
+  color: #ff8b35;
+  font-weight: bold;
+}
+</style>
+
+
+
+
+
+
+
+

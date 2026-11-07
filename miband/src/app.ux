@@ -1,0 +1,10 @@
+<script>
+export default {
+  onCreate() {
+    console.log('MiBand Camera app created')
+  },
+  onDestroy() {
+    console.log('MiBand Camera app destroyed')
+  }
+}
+</script>

@@ -1,0 +1,485 @@
+﻿<template>
+  <div class="page">
+    <div class="top">
+      <text class="brand">SHUTTER</text>
+      <div class="link">
+        <div class="dot {{connected ? 'dot-on' : ''}}"></div>
+        <text class="link-text">{{connected ? '手机在线' : '未连接'}}</text>
+      </div>
+    </div>
+
+    <div class="head">
+      <text class="title">快门</text>
+      <text class="sub">{{model}}</text>
+    </div>
+
+    <div class="finder">
+      <div class="finder-top">
+        <div class="live">
+          <div class="live-dot {{cameraReady ? 'live-on' : ''}}"></div>
+          <text class="live-text">{{cameraReady ? 'READY' : 'OFFLINE'}}</text>
+        </div>
+        <text class="battery">{{battery >= 0 ? battery + '%' : '—'}}</text>
+      </div>
+      <div class="expo">
+        <text class="expo-main">{{shutter}}</text>
+        <text class="expo-sub">{{aperture}} · {{iso}}</text>
+      </div>
+      <text class="ev">EV {{ev}}</text>
+    </div>
+
+    <div class="shutter-area">
+      <div class="shutter-ring">
+        <div class="shutter {{busy ? 'shutter-busy' : ''}}" @click="shoot">
+          <text class="shutter-text">{{busy ? '处理中' : '拍摄'}}</text>
+          <text class="shutter-sub">{{busy ? '请稍候' : '轻触释放'}}</text>
+        </div>
+      </div>
+    </div>
+
+    <div class="mini-row">
+      <div class="mini" @click="focus">
+        <text class="mini-text">对焦</text>
+      </div>
+      <div class="mini" @click="toggleRecord">
+        <text class="mini-text {{recording ? 'rec-on' : ''}}">{{recording ? '停止' : '录像'}}</text>
+      </div>
+    </div>
+
+    <text class="status">{{statusText}}</text>
+    <div class="spacer"></div>
+
+    <div class="tabs">
+      <div class="tab" @click="goHome"><text class="tab-text">状态</text></div>
+      <div class="tab tab-active"><text class="tab-text tab-text-active">快门</text></div>
+      <div class="tab" @click="goParams"><text class="tab-text">参数</text></div>
+    </div>
+  </div>
+</template>
+
+<script>
+import router from '@system.router'
+
+export default {
+  data: {
+    connected: false,
+    cameraReady: false,
+    model: '等待相机',
+    battery: -1,
+    iso: '—',
+    shutter: '—',
+    aperture: '—',
+    ev: '—',
+    busy: false,
+    recording: false,
+    statusText: '等待手机指令'
+  },
+  onInit() {
+    this.scheduleBind()
+  },
+  onShow() {
+    this.scheduleBind()
+    if (this.conn) this.send({ v: 1, cmd: 'status' })
+    this.startPolling()
+  },
+  onHide() {
+    this.stopPolling()
+  },
+  onDestroy() {
+    this.stopPolling()
+  },
+  scheduleBind() {
+    if (this.bindScheduled) return
+    this.bindScheduled = true
+    const self = this
+    setTimeout(function () {
+      self.bindScheduled = false
+      try {
+        self.bindChannel()
+      } catch (e) {
+        self.showLinkError(e)
+      }
+    }, 300)
+  },
+  showLinkError(e) {
+    this.connected = false
+    this.cameraReady = false
+    this.statusText = '通信接口不可用，请更新手环系统'
+    console.error('bind channel failed', e)
+  },
+  bindChannel() {
+    if (!this.interconnect) {
+      try {
+        this.interconnect = require('@system.interconnect')
+      } catch (e) {
+        this.showLinkError(e)
+        return
+      }
+    }
+    if (!this.interconnect) {
+      this.showLinkError('interconnect module unavailable')
+      return
+    }
+    if (!this.conn) this.conn = this.interconnect.instance()
+    if (this.bound || !this.conn) return
+    this.bound = true
+    const self = this
+    this.conn.onopen = function () {
+      self.connected = true
+      self.statusText = '手机通道在线'
+      self.send({ v: 1, cmd: 'status' })
+    }
+    this.conn.onclose = function () {
+      self.connected = false
+      self.cameraReady = false
+      self.statusText = '手机通道断开'
+    }
+    this.conn.onerror = function () {
+      self.connected = false
+      self.statusText = '请安装并打开手机端应用'
+    }
+    this.conn.onmessage = function (res) {
+      self.handleMessage(res)
+    }
+    this.conn.getReadyState({
+      success: function (res) {
+        if (res.status === 1) self.connected = true
+      }
+    })
+  },
+  handleMessage(res) {
+    try {
+      let raw = res && res.data !== undefined ? res.data : res
+      if (typeof raw === 'string') raw = JSON.parse(raw)
+      if (raw && raw.data && typeof raw.data === 'string') raw = JSON.parse(raw.data)
+      if (raw && raw.data && typeof raw.data === 'object') raw = raw.data
+      if (!raw) return
+      if (raw.type === 'ack') {
+        if (!raw.ok && raw.message) this.statusText = raw.message
+        return
+      }
+      if (raw.type !== 'state') return
+      this.connected = true
+      this.cameraReady = !!raw.connected
+      this.model = raw.model || '等待相机'
+      this.battery = typeof raw.battery === 'number' ? raw.battery : -1
+      this.iso = raw.iso || '—'
+      this.shutter = raw.shutter || '—'
+      this.aperture = raw.aperture || '—'
+      this.ev = raw.ev || '—'
+      this.busy = !!raw.busy
+      this.recording = !!raw.recording
+      this.statusText = raw.connected ? (raw.message || '相机就绪') : '请在手机端连接相机'
+      if (this.lastBusy && !this.busy) {
+        this.vibrate()
+        this.statusText = '拍摄完成'
+      }
+      this.lastBusy = this.busy
+    } catch (e) {
+      console.log('state parse error', e)
+    }
+  },
+  shoot() {
+    if (!this.cameraReady || this.busy) {
+      this.statusText = this.cameraReady ? '相机正在处理，请稍候' : '请先在手机端连接相机'
+      return
+    }
+    this.vibrate()
+    this.statusText = '快门已发送…'
+    this.send({ v: 1, cmd: 'capture' })
+  },
+  focus() {
+    if (!this.cameraReady) {
+      this.statusText = '请先在手机端连接相机'
+      return
+    }
+    this.vibrate()
+    this.statusText = '正在对焦…'
+    this.send({ v: 1, cmd: 'focus' })
+  },
+  toggleRecord() {
+    if (!this.cameraReady) {
+      this.statusText = '请先在手机端连接相机'
+      return
+    }
+    this.vibrate()
+    this.send({ v: 1, cmd: 'record', value: !this.recording })
+    this.statusText = this.recording ? '正在停止录像…' : '正在开始录像…'
+  },
+  send(payload) {
+    const self = this
+    if (!this.conn || typeof this.conn.send !== 'function') return
+    try {
+      this.conn.send({
+        data: payload,
+        success: function () {},
+        fail: function (data, code) {
+          self.connected = false
+          self.statusText = '发送失败 ' + code
+        }
+      })
+    } catch (e) {
+      self.connected = false
+      self.statusText = '发送异常'
+      console.error('send failed', e)
+    }
+  },
+  startPolling() {
+    this.stopPolling()
+    const self = this
+    this.timer = setInterval(function () {
+      self.send({ v: 1, cmd: 'status' })
+    }, 2000)
+  },
+  stopPolling() {
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+  },
+  goHome() {
+    router.replace({ uri: '/pages/index' })
+  },
+  goParams() {
+    router.replace({ uri: '/pages/params' })
+  },
+  vibrate() {
+    try {
+      if (!this.vibrator) this.vibrator = require('@system.vibrator')
+      this.vibrator.vibrate({ mode: 'short' })
+    } catch (e) {}
+  }
+}
+</script>
+
+<style>
+.page {
+  width: 212px;
+  height: 520px;
+  background-color: #000000;
+  flex-direction: column;
+  align-items: center;
+}
+.top {
+  width: 184px;
+  height: 30px;
+  margin-top: 28px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand {
+  color: #ff6900;
+  font-size: 15px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.link {
+  flex-direction: row;
+  align-items: center;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #5c5c5c;
+  margin-right: 5px;
+}
+.dot-on {
+  background-color: #30b98c;
+}
+.link-text {
+  color: #8d877f;
+  font-size: 15px;
+}
+.head {
+  width: 184px;
+  height: 58px;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+.title {
+  color: #f7f2ea;
+  font-size: 30px;
+  font-weight: bold;
+}
+.sub {
+  color: #77726b;
+  font-size: 15px;
+  width: 100px;
+  text-align: right;
+  margin-bottom: 4px;
+}
+.finder {
+  width: 184px;
+  height: 106px;
+  margin-top: 8px;
+  border-radius: 20px;
+  background-color: #0d0e0f;
+  border: 1px solid #24262a;
+  padding: 11px 14px;
+  flex-direction: column;
+}
+.finder-top {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.live {
+  flex-direction: row;
+  align-items: center;
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #5b5b5b;
+  margin-right: 5px;
+}
+.live-on {
+  background-color: #ff6900;
+}
+.live-text {
+  color: #9a948c;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+.battery {
+  color: #77726b;
+  font-size: 15px;
+}
+.expo {
+  flex-direction: row;
+  align-items: flex-end;
+  margin-top: 8px;
+}
+.expo-main {
+  color: #f7f2ea;
+  font-size: 28px;
+  font-weight: bold;
+}
+.expo-sub {
+  color: #8d877f;
+  font-size: 13px;
+  margin-left: 8px;
+  margin-bottom: 3px;
+}
+.ev {
+  color: #ff8b35;
+  font-size: 15px;
+  margin-top: 3px;
+}
+.shutter-area {
+  width: 184px;
+  height: 152px;
+  margin-top: 9px;
+  align-items: center;
+  justify-content: center;
+}
+.shutter-ring {
+  width: 144px;
+  height: 144px;
+  border-radius: 72px;
+  border: 2px solid #3a2515;
+  align-items: center;
+  justify-content: center;
+}
+.shutter {
+  width: 130px;
+  height: 130px;
+  border-radius: 65px;
+  background-color: #ff6900;
+  border: 4px solid #ffb27a;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+.shutter-busy {
+  background-color: #6b3b16;
+  border-color: #8e5a30;
+}
+.shutter-text {
+  color: #ffffff;
+  font-size: 28px;
+  font-weight: bold;
+}
+.shutter-sub {
+  color: #ffe1cc;
+  font-size: 15px;
+  margin-top: 2px;
+}
+.mini-row {
+  width: 184px;
+  height: 44px;
+  flex-direction: row;
+  justify-content: space-between;
+}
+.mini {
+  width: 88px;
+  height: 44px;
+  border-radius: 15px;
+  background-color: #141416;
+  border: 1px solid #24262a;
+  align-items: center;
+  justify-content: center;
+}
+.mini-text {
+  color: #d7d1c9;
+  font-size: 20px;
+}
+.rec-on {
+  color: #ff6b60;
+}
+
+.status {
+  width: 184px;
+  height: 20px;
+  color: #77726b;
+  font-size: 15px;
+  text-align: center;
+  margin-top: 6px;
+}
+.spacer {
+  flex: 1;
+}
+.tabs {
+  width: 184px;
+  height: 42px;
+  border-radius: 16px;
+  background-color: #101112;
+  flex-direction: row;
+  align-items: center;
+  padding: 3px;
+  margin-bottom: 8px;
+}
+.tab {
+  flex: 1;
+  height: 36px;
+  border-radius: 13px;
+  align-items: center;
+  justify-content: center;
+}
+.tab-active {
+  background-color: #2a1a0d;
+}
+.tab-text {
+  color: #858078;
+  font-size: 18px;
+}
+.tab-text-active {
+  color: #ff8b35;
+  font-weight: bold;
+}
+</style>
+
+
+
+
+
+
+
+
+
+
+

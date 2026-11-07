@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <usb-device vendor-id="1200" /> <!-- Nikon -->
+    <usb-device vendor-id="1193" /> <!-- Canon -->
+    <usb-device vendor-id="1356" /> <!-- Sony -->
+    <usb-device vendor-id="1242" /> <!-- Fujifilm -->
+    <usb-device vendor-id="1243" /> <!-- Panasonic -->
+    <usb-device vendor-id="1972" /> <!-- Olympus/OM -->
+    <usb-device vendor-id="6800" /> <!-- Leica -->
+</resources>
